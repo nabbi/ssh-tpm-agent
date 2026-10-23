@@ -41,18 +41,22 @@ var (
 var SSH_TPM_AGENT_ADD = "tpm-add-key"
 
 type Agent struct {
-	mu        sync.Mutex
-	tpm       func() transport.TPMCloser
-	op        func() ([]byte, error)
-	pin       func(key.SSHTPMKeys) ([]byte, *keyring.Key, error)
-	listener  *net.UnixListener
-	quit      chan any
-	wg        sync.WaitGroup
-	keyring   func() *keyring.ThreadKeyring
-	keys      []key.SSHTPMKeys
-	lifetimes map[string]*keyLifetime
-	hierkeys  []*key.HierSSHTPMKey
-	agents    []agent.ExtendedAgent
+	mu                      sync.Mutex
+	tpm                     func() transport.TPMCloser
+	op                      func() ([]byte, error)
+	pin                     func(key.SSHTPMKeys) ([]byte, *keyring.Key, error)
+	listener                *net.UnixListener
+	quit                    chan any
+	wg                      sync.WaitGroup
+	keyring                 func() *keyring.ThreadKeyring
+	keys                    []key.SSHTPMKeys
+	lifetimes               map[string]*keyLifetime
+	defaultLifetimeSecs     uint32
+	defaultLifetimeSet      bool
+	defaultCacheTimeoutSecs uint32
+	defaultCacheTimeoutSet  bool
+	hierkeys                []*key.HierSSHTPMKey
+	agents                  []agent.ExtendedAgent
 
 	// confirmed records the public keys (certificate wrapper stripped) that
 	// were loaded with a confirm constraint at any point during this
@@ -156,6 +160,7 @@ func (a *Agent) addTPMKey(addedkey []byte, peer string) ([]byte, error) {
 		return nil, err
 	}
 	a.noteConfirm(k)
+	a.applyDefaults(k)
 
 	// delete the key if it already exists in the list
 	// it may have been loaded with no certificate or an old certificate
@@ -434,6 +439,7 @@ func (a *Agent) AddKey(k *key.SSHTPMKey) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.noteConfirm(k)
+	a.applyDefaults(k)
 	a.setLifetime(k)
 	a.keys = append(a.keys, k)
 	return nil
@@ -446,10 +452,33 @@ func (a *Agent) LoadKeys(keys []key.SSHTPMKeys) {
 	for _, k := range keys {
 		a.noteConfirm(k)
 		if tpmKey, ok := k.(*key.SSHTPMKey); ok {
+			a.applyDefaults(tpmKey)
 			a.setLifetime(tpmKey)
 		}
 	}
 	a.keys = append(a.keys, keys...)
+}
+
+// SetDefaults configures the values used when an added identity does not
+// carry its own lifetime or cache-timeout constraint.
+func (a *Agent) SetDefaults(lifetimeSecs uint32, lifetimeSet bool, cacheTimeoutSecs uint32, cacheTimeoutSet bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.defaultLifetimeSecs = lifetimeSecs
+	a.defaultLifetimeSet = lifetimeSet
+	a.defaultCacheTimeoutSecs = cacheTimeoutSecs
+	a.defaultCacheTimeoutSet = cacheTimeoutSet
+}
+
+func (a *Agent) applyDefaults(k *key.SSHTPMKey) {
+	if !k.LifetimeSet && a.defaultLifetimeSet {
+		k.LifetimeSecs = a.defaultLifetimeSecs
+		k.LifetimeSet = true
+	}
+	if !k.CacheTimeoutSet && a.defaultCacheTimeoutSet {
+		k.CacheTimeoutSecs = a.defaultCacheTimeoutSecs
+		k.CacheTimeoutSet = true
+	}
 }
 
 // setLifetime should be called with a.mu held. A replacement key cancels its old timer.
