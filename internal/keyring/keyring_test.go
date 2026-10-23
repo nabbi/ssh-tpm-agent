@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -90,7 +91,7 @@ func TestNotAccessibleFromOtherThread(t *testing.T) {
 			errc <- err
 			return
 		}
-		id, err := kr.addKey("fingerprint", []byte("secret passphrase"))
+		id, err := kr.addKey("fingerprint", []byte("secret passphrase"), 0)
 		if err != nil {
 			errc <- err
 			return
@@ -119,5 +120,20 @@ func TestNotAccessibleFromOtherThread(t *testing.T) {
 			_, _ = unix.KeyctlInt(unix.KEYCTL_UNLINK, id, unix.KEY_SPEC_USER_KEYRING, 0, 0)
 			t.Fatalf("expected EACCES linking %d into the user keyring, got %v", id, err)
 		}
+	}
+}
+
+func TestKeyTimeout(t *testing.T) {
+	keyring := newTestKeyring(t)
+	b := []byte("test string")
+	if err := keyring.AddKeyWithTimeout("test-timeout", b, time.Second); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+
+	_, err := keyring.ReadKey("test-timeout")
+	if !errors.Is(err, syscall.EKEYEXPIRED) && !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("expected timed-out key to be expired or inaccessible, got: %v", err)
 	}
 }

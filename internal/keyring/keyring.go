@@ -3,6 +3,7 @@ package keyring
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -41,13 +42,17 @@ func CreateThreadKeyring() (*Keyring, error) {
 }
 
 func (k *Keyring) AddKey(name string, b []byte) error {
+	return k.AddKeyWithTimeout(name, b, 0)
+}
+
+func (k *Keyring) AddKeyWithTimeout(name string, b []byte, timeout time.Duration) error {
 	slog.Debug("addkey", slog.String("name", name))
-	_, err := k.addKey(name, b)
+	_, err := k.addKey(name, b, timeout)
 	return err
 }
 
 // addKey adds the key and returns its serial so tests can probe it.
-func (k *Keyring) addKey(name string, b []byte) (int, error) {
+func (k *Keyring) addKey(name string, b []byte, timeout time.Duration) (int, error) {
 	id, err := unix.AddKey("user", name, b, k.ringid)
 	if err != nil {
 		return 0, fmt.Errorf("failed add-key: %v", err)
@@ -58,14 +63,29 @@ func (k *Keyring) addKey(name string, b []byte) (int, error) {
 		_, _ = unix.KeyctlInt(unix.KEYCTL_UNLINK, id, k.ringid, 0, 0)
 		return 0, fmt.Errorf("failed restricting key: %v", err)
 	}
+	if timeout > 0 {
+		if err := setKeyTimeout(id, timeout); err != nil {
+			_, _ = unix.KeyctlInt(unix.KEYCTL_UNLINK, id, k.ringid, 0, 0)
+			return 0, err
+		}
+	}
 	return id, nil
 }
 
 func (k *Keyring) ReadKey(name string) (*Key, error) {
+	return k.ReadKeyWithTimeout(name, 0)
+}
+
+func (k *Keyring) ReadKeyWithTimeout(name string, timeout time.Duration) (*Key, error) {
 	slog.Debug("readkey", slog.String("name", name))
 	id, err := unix.KeyctlSearch(k.ringid, "user", name, 0)
 	if err != nil {
 		return nil, err
+	}
+	if timeout > 0 {
+		if err := setKeyTimeout(id, timeout); err != nil {
+			return nil, err
+		}
 	}
 	b, err := ReadKeyIntoMemory(id)
 	if err != nil {
@@ -82,4 +102,16 @@ func (k *Keyring) RemoveKey(name string) error {
 	}
 	_, err = unix.KeyctlInt(unix.KEYCTL_UNLINK, id, k.ringid, 0, 0)
 	return err
+}
+
+func setKeyTimeout(id int, timeout time.Duration) error {
+	seconds := int((timeout + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return fmt.Errorf("key timeout must be at least 1 second")
+	}
+	_, err := unix.KeyctlInt(unix.KEYCTL_SET_TIMEOUT, id, seconds, 0, 0)
+	if err != nil {
+		return fmt.Errorf("failed set-key-timeout: %v", err)
+	}
+	return nil
 }
