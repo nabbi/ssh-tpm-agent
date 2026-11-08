@@ -30,7 +30,14 @@ SSH agent for TPM
 >   to prompt, so clients can not drive the TPM into dictionary-attack lockout.
 > * Malformed `tpm-add-key` messages are rejected instead of crashing the agent.
 > * The passphrase authorises the key through a salted HMAC session, so it no
->   longer crosses the TPM bus in cleartext.
+>   longer crosses the TPM bus in cleartext; `ssh-tpm-keygen -p` changes it the
+>   same way.
+> * `ssh-tpm-keygen -p` passes the old and new passphrase in the right order
+>   (upstream #133).
+>
+> Also carried, from upstream pull requests #142, #143 and #144 that are
+> still open there: `ssh-tpm-add -t` key lifetimes, `--cache-timeout` for the
+> cached passphrase, and agent-wide defaults for both.
 
 `ssh-tpm-agent` is a ssh-agent compatible agent that allows keys to be created
 by the Trusted Platform Module (TPM) for authentication towards ssh servers.
