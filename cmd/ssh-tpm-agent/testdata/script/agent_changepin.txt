@@ -1,0 +1,61 @@
+# Create an askpass binary that answers passphrase prompts with the content
+# of askpass.password. A file is used because the background agent does not
+# see later env changes.
+exec go build -o askpass-test askpass.go
+env SSH_ASKPASS=./askpass-test
+env SSH_ASKPASS_REQUIRE=force
+
+exec ssh-tpm-agent -d --no-load --no-cache &agent&
+
+# Create a key with one passphrase and change it to another
+exec ssh-tpm-keygen -N oldpass
+exec ssh-tpm-keygen -p -f .ssh/id_ecdsa.tpm -P oldpass -N newpass
+stdout 'saved with the new passphrase'
+
+exec ssh-tpm-add
+stdout id_ecdsa.tpm
+
+# The stored public key still matches the key file
+exec ssh-tpm-keygen --print-pubkey .ssh/id_ecdsa.tpm
+cp stdout printed.pub
+cmp printed.pub .ssh/id_ecdsa.pub
+
+# The old passphrase no longer works
+cp oldpass askpass.password
+! exec ssh-keygen -Y sign -n file -f .ssh/id_ecdsa.pub file_to_sign.txt
+! exists file_to_sign.txt.sig
+
+# The new passphrase does
+cp newpass askpass.password
+exec ssh-keygen -Y sign -n file -f .ssh/id_ecdsa.pub file_to_sign.txt
+stdin file_to_sign.txt
+exec ssh-keygen -Y check-novalidate -n file -f .ssh/id_ecdsa.pub -s file_to_sign.txt.sig
+exists file_to_sign.txt.sig
+
+-- file_to_sign.txt --
+Hello World
+-- oldpass --
+oldpass
+-- newpass --
+newpass
+-- go.mod --
+module example.com/askpass
+
+-- askpass.go --
+package main
+
+import (
+  "fmt"
+  "os"
+  "strings"
+)
+
+func main() {
+  if strings.Contains(os.Args[1], "passphrase") {
+    b, err := os.ReadFile("askpass.password")
+    if err != nil {
+      os.Exit(1)
+    }
+    fmt.Println(strings.TrimSpace(string(b)))
+  }
+}
