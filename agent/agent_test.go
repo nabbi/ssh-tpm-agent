@@ -229,3 +229,81 @@ func TestRemoveCertFromProxy(t *testing.T) {
 		})
 	}
 }
+
+// TestConfirmConstraintSticky checks that a client can not drop a key's
+// confirm constraint by re-adding (or removing and re-adding) the key
+// without the user's approval through SSH_ASKPASS.
+func TestConfirmConstraintSticky(t *testing.T) {
+	tpm, err := simulator.OpenSimulator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tpm.Close()
+
+	// /bin/false denies, /bin/true approves; both work as SSH_ASKPASS
+	// programs for confirm prompts, which only look at the exit code.
+	t.Setenv("SSH_ASKPASS_REQUIRE", "force")
+	t.Setenv("SSH_ASKPASS", "/bin/false")
+
+	k, err := keytest.MkKey(t, tpm, tpm2.TPMAlgECC, 256, []byte(""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag := keytest.NewTestAgent(t, tpm)
+	defer ag.Stop()
+
+	addKey := func(confirm bool) error {
+		_, err := ag.Extension(agent.SSH_TPM_AGENT_ADD, agent.MarshalTPMKeyMsg(&sshagent.AddedKey{
+			PrivateKey:       k,
+			ConfirmBeforeUse: confirm,
+		}))
+		return err
+	}
+
+	// Victim adds the key with -c; signing is denied by askpass.
+	if err := addKey(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ag.Sign(*k.PublicKey, []byte("test")); !errors.Is(err, agent.ErrUserDeniedConfirm) {
+		t.Fatalf("expected ErrUserDeniedConfirm with constraint, got %v", err)
+	}
+
+	// Another client re-adds the same key without the constraint; the user
+	// declines, so the add is refused and signing still asks.
+	if err := addKey(false); !errors.Is(err, agent.ErrConfirmConstraintKept) {
+		t.Fatalf("expected ErrConfirmConstraintKept, got %v", err)
+	}
+	if _, err := ag.Sign(*k.PublicKey, []byte("test")); !errors.Is(err, agent.ErrUserDeniedConfirm) {
+		t.Fatalf("expected ErrUserDeniedConfirm after refused re-add, got %v", err)
+	}
+
+	// Removing the key first does not help either.
+	if err := ag.RemoveAll(); err != nil {
+		t.Fatal(err)
+	}
+	if err := addKey(false); !errors.Is(err, agent.ErrConfirmConstraintKept) {
+		t.Fatalf("expected ErrConfirmConstraintKept after RemoveAll, got %v", err)
+	}
+	keys, _ := ag.List()
+	if len(keys) != 0 {
+		t.Fatalf("refused key must not be loaded, got %d keys", len(keys))
+	}
+
+	// Without an askpass program at all the constraint is kept as well.
+	t.Setenv("SSH_ASKPASS", "/nonexistent/askpass")
+	if err := addKey(false); !errors.Is(err, agent.ErrConfirmConstraintKept) {
+		t.Fatalf("expected ErrConfirmConstraintKept without askpass, got %v", err)
+	}
+
+	// When the user approves, the constraint is dropped and signing no
+	// longer consults askpass even though it would deny.
+	t.Setenv("SSH_ASKPASS", "/bin/true")
+	if err := addKey(false); err != nil {
+		t.Fatalf("expected approved re-add to succeed, got %v", err)
+	}
+	t.Setenv("SSH_ASKPASS", "/bin/false")
+	if _, err := ag.Sign(*k.PublicKey, []byte("test")); err != nil {
+		t.Fatalf("expected signing without constraint to succeed, got %v", err)
+	}
+}

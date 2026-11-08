@@ -31,9 +31,10 @@ import (
 )
 
 var (
-	ErrOperationUnsupported = errors.New("operation unsupported")
-	ErrNoMatchPrivateKeys   = errors.New("no private keys match the requested public key")
-	ErrUserDeniedConfirm    = errors.New("agent: user declined key confirmation")
+	ErrOperationUnsupported  = errors.New("operation unsupported")
+	ErrNoMatchPrivateKeys    = errors.New("no private keys match the requested public key")
+	ErrUserDeniedConfirm     = errors.New("agent: user declined key confirmation")
+	ErrConfirmConstraintKept = errors.New("agent: user declined to drop the confirm constraint")
 )
 
 var SSH_TPM_AGENT_ADD = "tpm-add-key"
@@ -50,21 +51,89 @@ type Agent struct {
 	keys     []key.SSHTPMKeys
 	hierkeys []*key.HierSSHTPMKey
 	agents   []agent.ExtendedAgent
+
+	// confirmed records the public keys (certificate wrapper stripped) that
+	// were loaded with a confirm constraint at any point during this
+	// agent's lifetime. A client can only drop the constraint again by
+	// having the user approve it through SSH_ASKPASS.
+	confirmed map[string]struct{}
 }
 
 var _ agent.ExtendedAgent = &Agent{}
 
 func (a *Agent) Extension(extensionType string, contents []byte) ([]byte, error) {
+	return a.extension(extensionType, contents, "")
+}
+
+func (a *Agent) extension(extensionType string, contents []byte, peer string) ([]byte, error) {
 	slog.Debug("called extensions")
 	switch extensionType {
 	case SSH_TPM_AGENT_ADD:
 		slog.Debug("runnning extension", slog.String("type", extensionType))
-		return a.AddTPMKey(contents)
+		return a.addTPMKey(contents, peer)
 	}
 	return nil, agent.ErrExtensionUnsupported
 }
 
 func (a *Agent) AddTPMKey(addedkey []byte) ([]byte, error) {
+	return a.addTPMKey(addedkey, "")
+}
+
+// bareKey returns the marshalled public key of k with any certificate
+// wrapper stripped, so a key added both plain and as a certificate maps to
+// the same entry.
+func bareKey(k key.SSHTPMKeys) []byte {
+	blob := k.AgentKey().Marshal()
+	if pub, err := ssh.ParsePublicKey(blob); err == nil {
+		if cert, ok := pub.(*ssh.Certificate); ok {
+			return cert.Key.Marshal()
+		}
+	}
+	return blob
+}
+
+// noteConfirm must be called with a.mu held for every key that enters
+// a.keys, so the confirm constraint is remembered for its public key.
+func (a *Agent) noteConfirm(k key.SSHTPMKeys) {
+	if k.GetConfirmBeforeUse() {
+		a.confirmed[string(bareKey(k))] = struct{}{}
+	}
+}
+
+// allowDropConfirm is called with a.mu held when a key without a confirm
+// constraint is added for a public key that previously had one. The
+// constraint protects against clients on a forwarded socket, and such a
+// client could otherwise simply re-add the key (or remove and re-add it)
+// to get rid of the constraint. Only the user may drop it, through the same
+// SSH_ASKPASS confirmation used for signing. If askpass is unavailable the
+// constraint is kept.
+func (a *Agent) allowDropConfirm(k key.SSHTPMKeys, peer string) error {
+	if k.GetConfirmBeforeUse() {
+		return nil
+	}
+	bare := string(bareKey(k))
+	if _, ok := a.confirmed[bare]; !ok {
+		return nil
+	}
+	prompt := fmt.Sprintf("Allow adding key %s without per-use confirmation?\nKey fingerprint %s.\nThe key was previously added requiring confirmation.",
+		k.GetDescription(), k.Fingerprint())
+	if peer != "" {
+		prompt += "\nRequested by " + peer
+	}
+	ok, err := askpass.AskPermission(prompt)
+	if err != nil {
+		slog.Info("askpass confirmation failed; keeping confirm constraint", slog.String("error", err.Error()))
+		return ErrConfirmConstraintKept
+	}
+	if !ok {
+		slog.Info("user declined to drop confirm constraint", slog.String("fingerprint", k.Fingerprint()))
+		return ErrConfirmConstraintKept
+	}
+	delete(a.confirmed, bare)
+	return nil
+}
+
+func (a *Agent) addTPMKey(addedkey []byte, peer string) ([]byte, error) {
 	slog.Debug("called addtpmkey")
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -73,6 +142,11 @@ func (a *Agent) AddTPMKey(addedkey []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if err := a.allowDropConfirm(k, peer); err != nil {
+		return nil, err
+	}
+	a.noteConfirm(k)
 
 	// delete the key if it already exists in the list
 	// it may have been loaded with no certificate or an old certificate
@@ -243,13 +317,7 @@ func (a *Agent) confirmKeyUse(wantKey []byte, peer string) error {
 		// AgentKey() may return a certificate; unwrap it so that a key
 		// added both plain and as a cert is covered by either entry's
 		// confirm constraint.
-		blob := k.AgentKey().Marshal()
-		if pub, err := ssh.ParsePublicKey(blob); err == nil {
-			if cert, ok := pub.(*ssh.Certificate); ok {
-				blob = cert.Key.Marshal()
-			}
-		}
-		if !bytes.Equal(blob, wantKey) {
+		if !bytes.Equal(bareKey(k), wantKey) {
 			continue
 		}
 		if !k.GetConfirmBeforeUse() {
@@ -286,6 +354,10 @@ func (c *connAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error)
 
 func (c *connAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
 	return c.Agent.signWithFlags(key, data, flags, c.peer)
+}
+
+func (c *connAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
+	return c.Agent.extension(extensionType, contents, c.peer)
 }
 
 func (a *Agent) serveConn(c *net.UnixConn) {
@@ -334,6 +406,9 @@ func (a *Agent) serve() {
 
 func (a *Agent) AddKey(k *key.SSHTPMKey) error {
 	slog.Debug("called addkey")
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.noteConfirm(k)
 	a.keys = append(a.keys, k)
 	return nil
 }
@@ -342,6 +417,9 @@ func (a *Agent) LoadKeys(keys []key.SSHTPMKeys) {
 	slog.Debug("called loadkeys")
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	for _, k := range keys {
+		a.noteConfirm(k)
+	}
 	a.keys = append(a.keys, keys...)
 }
 
@@ -528,15 +606,16 @@ func LoadKeys(keyDir string, confirm bool) ([]key.SSHTPMKeys, error) {
 
 func NewAgent(listener *net.UnixListener, agents []agent.ExtendedAgent, keyring func() *keyring.ThreadKeyring, tpmFetch func() transport.TPMCloser, ownerPassword func() ([]byte, error), pin func(key.SSHTPMKeys) ([]byte, *keyring.Key, error)) *Agent {
 	a := &Agent{
-		agents:   agents,
-		tpm:      tpmFetch,
-		op:       ownerPassword,
-		listener: listener,
-		pin:      pin,
-		quit:     make(chan any),
-		keys:     []key.SSHTPMKeys{},
-		hierkeys: []*key.HierSSHTPMKey{},
-		keyring:  keyring,
+		agents:    agents,
+		tpm:       tpmFetch,
+		op:        ownerPassword,
+		listener:  listener,
+		pin:       pin,
+		quit:      make(chan any),
+		keys:      []key.SSHTPMKeys{},
+		hierkeys:  []*key.HierSSHTPMKey{},
+		keyring:   keyring,
+		confirmed: map[string]struct{}{},
 	}
 
 	a.wg.Add(1)

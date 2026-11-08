@@ -27,6 +27,14 @@ If no files are given it will try to load the default keys *~/.ssh/id_ecdsa.tpm*
   *ssh-tpm-agent*(1) via *SSH_ASKPASS*. Successful confirmation is signaled
   by a zero exit status from the askpass program, rather than text entered
   into the requester. This mirrors *ssh-add*(1) *-c*.
++
+Once a key has been added with *-c*, *ssh-tpm-agent*(1) remembers the
+constraint for that key for the rest of its lifetime. Adding the same key
+again without *-c*, also after removing it, asks the user for confirmation
+through *SSH_ASKPASS* before the constraint is dropped. If the user declines
+or no askpass program is available the key is not added. This stops a client
+on a forwarded agent socket that holds a copy of the key file from silently
+removing the constraint.
 
 == Environment
 *SSH_TPM_AUTH_SOCK*::

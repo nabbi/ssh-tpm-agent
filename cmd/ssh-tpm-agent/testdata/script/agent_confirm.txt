@@ -21,9 +21,26 @@ cp empty askpass.deny
 grep '^confirm Allow use of key' askpass.log
 rm askpass.log askpass.deny
 
-# Re-add without -c: askpass must not be consulted even if it would deny
+# Re-add without -c while askpass denies: the constraint can only be dropped
+# with the user's approval, so the add is refused and signing still asks
+exec ssh-add -D
+cp empty askpass.deny
+! exec ssh-tpm-add
+grep '^confirm Allow adding key' askpass.log
+rm askpass.log
+exec ssh-tpm-add -c
+! exec ssh-keygen -Y sign -n file -f .ssh/id_ecdsa.pub file_to_sign.txt
+! exists file_to_sign.txt.sig
+grep '^confirm Allow use of key' askpass.log
+rm askpass.log askpass.deny
+
+# Re-add without -c with the user's approval: the constraint is dropped and
+# askpass must not be consulted for signing even if it would deny
 exec ssh-add -D
 exec ssh-tpm-add
+grep '^confirm Allow adding key' askpass.log
+grep 'Requested by ssh-tpm-add' askpass.log
+rm askpass.log
 cp empty askpass.deny
 exec ssh-keygen -Y sign -n file -f .ssh/id_ecdsa.pub file_to_sign.txt
 ! exists askpass.log
