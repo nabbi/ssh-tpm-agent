@@ -9,6 +9,17 @@ SSH agent for TPM
 > `v*` tag pushed here gets a release with `-deps.tar.xz` and
 > `-vendor.tar.xz` from `.github/workflows/golang-dist.yml`.
 >
+> Upstream releases are mirrored too: `.github/workflows/mirror.yml`
+> ([projg2/golang-dist-mirror-action](https://github.com/projg2/golang-dist-mirror-action))
+> copies new upstream tags into this repository and gives each a release with
+> the same tarballs. It runs by hand only, when bumping the ebuild to an
+> upstream version (before `pkgdev manifest`): `scripts/golang-dist-deps
+> nabbi/ssh-tpm-agent vX.Y.Z` in oubliette-overlay, or `gh workflow run
+> mirror.yml -R nabbi/ssh-tpm-agent`. It needs the `PUSH_TOKEN` secret, a
+> fine-grained token for this repository with Contents and Workflows read and
+> write. Tags older than v0.9.0 were added without a workflow, so no release
+> is built for them. Fork releases are tagged `v<upstream version>-nabbi<N>`.
+>
 > Fixes on top of upstream, one commit each:
 >
 > * Cached passphrases live in a possessor-only thread keyring instead of a

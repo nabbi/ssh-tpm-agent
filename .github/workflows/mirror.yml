@@ -1,0 +1,17 @@
+name: Sync with upstream
+# Manual only: run it when bumping the ebuild, before pkgdev manifest.
+#   scripts/golang-dist-deps in nabbi/oubliette-overlay, or
+#   gh workflow run mirror.yml -R nabbi/ssh-tpm-agent
+on:
+  workflow_dispatch:
+
+jobs:
+  sync-mirror:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Update mirror
+        uses: projg2/golang-dist-mirror-action@v1
+        with:
+          token: ${{ secrets.PUSH_TOKEN }}
