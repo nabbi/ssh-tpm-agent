@@ -68,29 +68,37 @@ func (t *SSHKeySigner) Sign(r io.Reader, digest []byte, opts crypto.SignerOpts) 
 	return b, err
 }
 
-// signKey wraps t.auth to ensure its buffer is wiped and freed before signKey returns.
-func (t *SSHKeySigner) signKey(k *SSHTPMKey, r io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	var boxes []*keyring.Key
-	defer func() {
-		for _, box := range boxes {
-			if err := box.Free(); err != nil {
-				slog.Error("failed to release pin storage", slog.Any("err", err))
-			}
-		}
-	}()
+// signKey signs with the TPM key, passing the user auth through a salted
+// HMAC session (see signTPMKey). The auth buffer is wiped and freed before
+// signKey returns.
+func (t *SSHKeySigner) signKey(k *SSHTPMKey, _ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	digestalg, signalg, err := signOpts(k.TPMKey, digest, opts)
+	if err != nil {
+		return nil, err
+	}
 
-	return keyfile.NewTPMKeySigner(k.TPMKey, t.ownerauth, t.tpm,
-		func(tk *keyfile.TPMKey) ([]byte, error) {
-			key, box, err := t.auth(tk)
-			if box != nil {
-				boxes = append(boxes, box)
-			}
-			if err != nil {
-				return nil, err
-			}
-			return key, nil
-		},
-	).Sign(r, digest, opts)
+	auth := []byte("")
+	if k.HasAuth() {
+		p, box, err := t.auth(k.TPMKey)
+		if box != nil {
+			defer func() {
+				if err := box.Free(); err != nil {
+					slog.Error("failed to release pin storage", slog.Any("err", err))
+				}
+			}()
+		}
+		if err != nil {
+			return nil, err
+		}
+		auth = p
+	}
+
+	ownerauth, err := t.ownerauth()
+	if err != nil {
+		return nil, err
+	}
+
+	return signTPMKey(t.tpm(), k.TPMKey, ownerauth, auth, digest, digestalg, signalg)
 }
 
 func NewSSHKeySigner(k SSHTPMKeys, keyring *keyring.ThreadKeyring, ownerAuth func() ([]byte, error), tpm func() transport.TPMCloser, auth func(*keyfile.TPMKey) ([]byte, *keyring.Key, error)) *SSHKeySigner {
