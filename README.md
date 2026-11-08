@@ -1,6 +1,26 @@
 SSH agent for TPM
 =================
 
+> **nabbi fork.** This branch tracks
+> [Foxboron/ssh-tpm-agent](https://github.com/Foxboron/ssh-tpm-agent) master
+> and carries hardening fixes that are not upstream, plus the Go dependency
+> tarballs for the `app-crypt/ssh-tpm-agent` ebuild in
+> [oubliette-overlay](https://github.com/nabbi/oubliette-overlay). Each
+> `v*` tag pushed here gets a release with `-deps.tar.xz` and
+> `-vendor.tar.xz` from `.github/workflows/golang-dist.yml`.
+>
+> Fixes on top of upstream, one commit each:
+>
+> * Cached passphrases live in a possessor-only thread keyring instead of a
+>   named session keyring any same-user process could link and read.
+> * A key's confirm constraint (`ssh-tpm-add -c`, `--confirm-loaded`) can only
+>   be dropped with the user's approval, not by a client re-adding the key.
+> * The agent never sends an empty passphrase to the TPM when it has nowhere
+>   to prompt, so clients can not drive the TPM into dictionary-attack lockout.
+> * Malformed `tpm-add-key` messages are rejected instead of crashing the agent.
+> * The passphrase authorises the key through a salted HMAC session, so it no
+>   longer crosses the TPM bus in cleartext.
+
 `ssh-tpm-agent` is a ssh-agent compatible agent that allows keys to be created
 by the Trusted Platform Module (TPM) for authentication towards ssh servers.
 
