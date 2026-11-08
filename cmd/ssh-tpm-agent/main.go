@@ -265,6 +265,12 @@ func main() {
 				keyInfo := fmt.Sprintf("Enter passphrase for (%s): ", key.GetDescription())
 				// TODO: askpass should box the byte slice
 				userauth, err := askpass.ReadPassphrase(keyInfo, askpass.RP_USE_ASKPASS)
+				if err == nil && len(userauth) == 0 {
+					// We only get here for keys that have a passphrase, so
+					// an empty answer can never be right. Refuse instead
+					// of letting the TPM count a failed attempt.
+					err = fmt.Errorf("empty passphrase for key %s", key.GetDescription())
+				}
 				if !noCache && err == nil {
 					slog.Debug("caching userauth for key in keyring", slog.String("fp", key.Fingerprint()))
 					if err := agentkeyring.AddKey(key.Fingerprint(), userauth); err != nil {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -123,12 +124,48 @@ func ReadPassphrase(prompt string, flags ReadPassFlags) ([]byte, error) {
 	fmt.Printf("%s", prompt)
 	pin, err := term.ReadPassword(int(syscall.Stdin))
 	if err != nil {
-		return []byte{}, nil
+		if (flags & RP_ALLOW_STDIN) == 0 {
+			// Nothing to prompt on, typically a daemon without SSH_ASKPASS
+			// and with stdin not a terminal. Do not hand back an empty
+			// passphrase as if the user had typed one: the agent would
+			// send it to the TPM and each attempt counts towards the
+			// dictionary attack lockout.
+			return nil, fmt.Errorf("failed reading passphrase from terminal: %w", err)
+		}
+		// stdin is not a terminal but the caller allows reading from it,
+		// as ssh-keygen does when scripted.
+		pin, err = readLine(os.Stdin)
+		if err != nil {
+			return nil, fmt.Errorf("failed reading passphrase from stdin: %w", err)
+		}
 	}
 	if (flags & RP_NEWLINE) != 0 {
 		fmt.Println("")
 	}
 	return pin, nil
+}
+
+// readLine reads up to a newline one byte at a time so nothing past the
+// line is consumed from a shared stdin. EOF ends the line.
+func readLine(r io.Reader) ([]byte, error) {
+	var line []byte
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n == 1 {
+			if b[0] == '\n' {
+				break
+			}
+			line = append(line, b[0])
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return bytes.TrimRight(line, "\r"), nil
 }
 
 func Program() (string, error) {
