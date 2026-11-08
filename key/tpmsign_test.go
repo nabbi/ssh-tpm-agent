@@ -122,3 +122,57 @@ func TestSignWrongPassphraseIsAuthFail(t *testing.T) {
 	}
 	_ = signer
 }
+
+func TestChangeAuthPassphrasesNotOnTheBus(t *testing.T) {
+	sim, err := simulator.OpenSimulator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sim.Close()
+	tpm := &recordingTPM{TPMCloser: sim}
+
+	oldpin := []byte("old passphrase 9c2e41")
+	newpin := []byte("new passphrase 5b7d03")
+	digest := sha256.Sum256([]byte("message"))
+
+	k, err := NewSSHTPMKey(tpm, tpm2.TPMAlgECC, 256, nil, keyfile.WithUserAuth(oldpin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tpm.commands = nil
+
+	if err := ChangeAuth(tpm, nil, k.TPMKey, oldpin, newpin); err != nil {
+		t.Fatalf("ChangeAuth failed: %v", err)
+	}
+	if tpm.sawBytes(oldpin) {
+		t.Fatal("old passphrase was sent to the TPM in cleartext")
+	}
+	if tpm.sawBytes(newpin) {
+		t.Fatal("new passphrase was sent to the TPM in cleartext")
+	}
+
+	// The wrong (old) passphrase must fail, the new one must sign.
+	if _, err := signTPMKey(tpm, k.TPMKey, nil, oldpin, digest[:], tpm2.TPMAlgSHA256, tpm2.TPMAlgECC); !errors.Is(err, tpm2.TPMRCAuthFail) {
+		t.Fatalf("expected TPM_RC_AUTH_FAIL with the old passphrase, got %v", err)
+	}
+	if _, err := signTPMKey(tpm, k.TPMKey, nil, newpin, digest[:], tpm2.TPMAlgSHA256, tpm2.TPMAlgECC); err != nil {
+		t.Fatalf("signing with the new passphrase failed: %v", err)
+	}
+
+	// The re-encoded key file carries the new private blob and auth flag.
+	reloaded, err := Decode(k.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.HasAuth() {
+		t.Fatal("re-encoded key lost its auth flag")
+	}
+	if _, err := signTPMKey(tpm, reloaded.TPMKey, nil, newpin, digest[:], tpm2.TPMAlgSHA256, tpm2.TPMAlgECC); err != nil {
+		t.Fatalf("signing with the re-encoded key failed: %v", err)
+	}
+
+	// Wrong current passphrase is refused.
+	if err := ChangeAuth(tpm, nil, k.TPMKey, oldpin, []byte("x")); !errors.Is(err, tpm2.TPMRCAuthFail) {
+		t.Fatalf("expected TPM_RC_AUTH_FAIL changing with a wrong passphrase, got %v", err)
+	}
+}

@@ -224,7 +224,7 @@ func doChangePin(tpm transport.TPMCloser, passphrase, keyPin, ownerPassword []by
 	}
 
 	// ChangeAuth takes the current passphrase before the new one.
-	if err := keyfile.ChangeAuth(tpm, ownerPassword, k.TPMKey, passphrase, keyPin); err != nil {
+	if err := key.ChangeAuth(tpm, ownerPassword, k.TPMKey, passphrase, keyPin); err != nil {
 		log.Fatalf("Failed changing passphrase on the key: %v", err)
 	}
 

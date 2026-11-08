@@ -110,3 +110,58 @@ func signOpts(k *keyfile.TPMKey, digest []byte, opts crypto.SignerOpts) (digesta
 	}
 	return digestalg, signalg, nil
 }
+
+// ChangeAuth replaces the passphrase of a loadable key, updating k's private
+// blob and user auth in place. Unlike keyfile.ChangeAuth, which authorises
+// the object with a password session, the current passphrase is used as the
+// auth value of a salted HMAC session and the new passphrase travels as a
+// parameter encrypted by that session, so neither crosses the TPM bus in
+// cleartext.
+func ChangeAuth(tpm transport.TPMCloser, ownerauth []byte, k *keyfile.TPMKey, oldpin, newpin []byte) error {
+	if !k.Keytype.Equal(keyfile.OIDLoadableKey) {
+		return fmt.Errorf("can only be used on loadable keys")
+	}
+
+	tpmMutex.Lock()
+	defer tpmMutex.Unlock()
+
+	sess := keyfile.NewTPMSession(tpm)
+	parent, err := keyfile.GetParentHandle(sess, k.Parent, ownerauth)
+	if err != nil {
+		return err
+	}
+	defer sess.FlushHandle()
+
+	_, parentPub, err := keyfile.ReadPublic(tpm, parent.Handle)
+	if err != nil {
+		return fmt.Errorf("failed reading parent public: %v", err)
+	}
+
+	handle, err := keyfile.LoadKeyWithParent(sess, *parent, k)
+	if err != nil {
+		return err
+	}
+	defer keyfile.FlushHandle(tpm, handle)
+
+	handle.Auth = tpm2.HMAC(tpm2.TPMAlgSHA256, 16,
+		tpm2.Auth(oldpin),
+		tpm2.AESEncryption(128, tpm2.EncryptInOut),
+		tpm2.Salted(parent.Handle, *parentPub))
+
+	rsp, err := tpm2.ObjectChangeAuth{
+		ParentHandle: parent,
+		ObjectHandle: *handle,
+		NewAuth: tpm2.TPM2BAuth{
+			Buffer: newpin,
+		},
+	}.Execute(tpm)
+	if err != nil {
+		return fmt.Errorf("ObjectChangeAuth failed: %w", err)
+	}
+
+	k.AddOptions(
+		keyfile.WithPrivkey(rsp.OutPrivate),
+		keyfile.WithUserAuth(newpin),
+	)
+	return nil
+}
