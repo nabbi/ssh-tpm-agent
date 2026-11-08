@@ -18,6 +18,8 @@ import (
 // 	ConstraintExtensions []sshagent.ConstraintExtension
 // }
 
+var ErrNoPrivateKey = errors.New("agent: tpm-add-key message has no private key")
+
 type TPMKeyMsg struct {
 	Type        string `sshtype:"17|25"`
 	PrivateKey  []byte
@@ -73,14 +75,15 @@ func ParseTPMKeyMsg(req []byte) (*key.SSHTPMKey, error) {
 		return nil, err
 	}
 
-	if len(k.PrivateKey) != 0 {
-		tpmkey, err = key.Decode(k.PrivateKey)
-		if err != nil {
-			return nil, err
-		}
+	if len(k.PrivateKey) == 0 {
+		return nil, ErrNoPrivateKey
+	}
+	tpmkey, err = key.Decode(k.PrivateKey)
+	if err != nil {
+		return nil, err
 	}
 
-	if tpmkey != nil && len(k.Constraints) != 0 {
+	if len(k.Constraints) != 0 {
 		if err := setConstraints(tpmkey, k.Constraints); err != nil {
 			return nil, err
 		}

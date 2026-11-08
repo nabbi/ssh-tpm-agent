@@ -307,3 +307,49 @@ func TestConfirmConstraintSticky(t *testing.T) {
 		t.Fatalf("expected signing without constraint to succeed, got %v", err)
 	}
 }
+
+// TestMalformedAddKeyDoesNotCrash sends tpm-add-key messages without a
+// private key, with and without a certificate. Both used to dereference a
+// nil key (immediately, or on the next List) and kill the agent process.
+func TestMalformedAddKeyDoesNotCrash(t *testing.T) {
+	tpm, err := simulator.OpenSimulator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tpm.Close()
+
+	k, err := keytest.MkKey(t, tpm, tpm2.TPMAlgECC, 256, []byte(""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := keytest.MkECDSA(t, elliptic.P256())
+	certKey, err := keytest.MkCertificate(t, &ca)(t, tpm, tpm2.TPMAlgECC, 256, []byte(""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ag := keytest.NewTestAgent(t, tpm)
+	defer ag.Stop()
+	if err := ag.AddKey(k); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, msg := range []agent.TPMKeyMsg{
+		{Type: "TPMKEY"},
+		{Type: "TPMKEY", CertBytes: certKey.Certificate.Marshal()},
+		{Type: "TPMKEY", Constraints: []byte{2}},
+	} {
+		_, err := ag.Extension(agent.SSH_TPM_AGENT_ADD, ssh.Marshal(msg))
+		if !errors.Is(err, agent.ErrNoPrivateKey) {
+			t.Fatalf("expected ErrNoPrivateKey, got %v", err)
+		}
+	}
+
+	keys, err := ag.List()
+	if err != nil {
+		t.Fatalf("List failed after malformed add: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected the one real key, got %d", len(keys))
+	}
+}

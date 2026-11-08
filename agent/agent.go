@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -141,6 +142,9 @@ func (a *Agent) addTPMKey(addedkey []byte, peer string) ([]byte, error) {
 	k, err := ParseTPMKeyMsg(addedkey)
 	if err != nil {
 		return nil, err
+	}
+	if k == nil {
+		return nil, ErrNoPrivateKey
 	}
 
 	if err := a.allowDropConfirm(k, peer); err != nil {
@@ -361,6 +365,15 @@ func (c *connAgent) Extension(extensionType string, contents []byte) ([]byte, er
 }
 
 func (a *Agent) serveConn(c *net.UnixConn) {
+	// A panic while handling one client must not take the agent, and with
+	// it every other client's keys, down. Log it and drop the connection.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic while serving agent client; closing connection",
+				slog.Any("panic", r), slog.String("stack", string(debug.Stack())))
+			c.Close()
+		}
+	}()
 	ca := &connAgent{Agent: a, peer: peerChain(c)}
 	if err := agent.ServeAgent(ca, c); err != io.EOF {
 		slog.Info("Agent client connection ended unsuccessfully", slog.String("error", err.Error()))
