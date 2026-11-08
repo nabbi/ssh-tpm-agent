@@ -6,7 +6,9 @@ import (
 	"sync"
 )
 
-// ThreadKeyring runs Keyring in a dedicated OS Thread
+// ThreadKeyring runs Keyring in a dedicated OS Thread. The underlying kernel
+// keyring is that thread's keyring, so every keyctl call has to be made from
+// the goroutine locked to it.
 type ThreadKeyring struct {
 	wg        sync.WaitGroup
 	addkey    chan *addkeyMsg
@@ -61,7 +63,7 @@ func (tk *ThreadKeyring) ReadKey(name string) (*Key, error) {
 	return ret.key, nil
 }
 
-func NewThreadKeyring(ctx context.Context, keyring *Keyring) (*ThreadKeyring, error) {
+func NewThreadKeyring(ctx context.Context) (*ThreadKeyring, error) {
 	var err error
 	var tk ThreadKeyring
 
@@ -76,7 +78,7 @@ func NewThreadKeyring(ctx context.Context, keyring *Keyring) (*ThreadKeyring, er
 	go func() {
 		var ak *Keyring
 		runtime.LockOSThread()
-		ak, err = keyring.CreateKeyring()
+		ak, err = CreateThreadKeyring()
 		if err != nil {
 			errCh <- err
 			return

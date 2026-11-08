@@ -13,7 +13,7 @@ var (
 )
 
 func TestSaveAndGetDataThreaded(t *testing.T) {
-	keyring, err := NewThreadKeyring(ctx, SessionKeyring)
+	keyring, err := NewThreadKeyring(ctx)
 	if err != nil {
 		t.Fatalf("failed getting keyring: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestSaveAndGetDataThreaded(t *testing.T) {
 }
 
 func TestNoKeyThreaded(t *testing.T) {
-	keyring, err := NewThreadKeyring(ctx, SessionKeyring)
+	keyring, err := NewThreadKeyring(ctx)
 	if err != nil {
 		t.Fatalf("failed getting keyring: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestNoKeyThreaded(t *testing.T) {
 }
 
 func TestRemoveKeyThreaded(t *testing.T) {
-	keyring, err := NewThreadKeyring(ctx, SessionKeyring)
+	keyring, err := NewThreadKeyring(ctx)
 	if err != nil {
 		t.Fatalf("failed getting keyring: %v", err)
 	}

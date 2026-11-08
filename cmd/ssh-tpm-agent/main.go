@@ -207,7 +207,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agentkeyring, err := keyring.NewThreadKeyring(ctx, keyring.SessionKeyring)
+	agentkeyring, err := keyring.NewThreadKeyring(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
